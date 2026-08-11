@@ -33,3 +33,15 @@ Hello Bob,
 This is a reminder for our meeting.
 ```
 
+
+#2
+
+
+
+**Why `os.ReadDir` instead of `filepath.Glob`?**
+`ReadDir` reads directory entries directly from the filesystem metadata. `Glob` does pattern matching which requires scanning and filtering. For listing all `.eml` files, `ReadDir` + manual filter is faster and more predictable. Also, `Glob` can behave unexpectedly with special characters in filenames.
+
+
+**Why ignore `os.IsNotExist` in DeleteMessage?**
+Race condition protection. Two POP3 sessions could mark the same message for deletion. The first `QUIT` deletes it successfully. The second `QUIT` should not fail — the desired end state (message gone) is already achieved. Failing would confuse the client.
+
