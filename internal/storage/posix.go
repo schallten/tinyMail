@@ -156,7 +156,7 @@ func (s *POSIXStorage) GetMessage(user string, id string) ([]byte, error) {
 		return nil, fmt.Errorf("invalid message ID: contains path separators or traversal")
 
 	}
-	path:= filepath.Join(s.BaseDir,user,"inbox",id)
+	path := filepath.Join(s.BaseDir, user, "inbox", id)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read message file: %w", err)
@@ -179,7 +179,6 @@ func isValidMessageID(id string) bool {
 	return true
 }
 
-
 // DeleteMessage removes a message file from disk.
 // Called during POP3 UPDATE phase after QUIT command.
 // Same sanitization as GetMessage to prevent arbitrary file deletion.
@@ -188,8 +187,8 @@ func (s *POSIXStorage) DeleteMessage(user string, id string) error {
 		return fmt.Errorf("invalid message ID: contains path separators or traversal")
 	}
 	path := filepath.Join(s.BaseDir, user, "inbox", id)
-	if err:=os.Remove(path); err!=nil && !os.IsNotExist(err){
-		return fmt.Errorf("delete message : %w",err)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete message : %w", err)
 	}
 	return nil
 }
