@@ -45,3 +45,16 @@ This is a reminder for our meeting.
 **Why ignore `os.IsNotExist` in DeleteMessage?**
 Race condition protection. Two POP3 sessions could mark the same message for deletion. The first `QUIT` deletes it successfully. The second `QUIT` should not fail — the desired end state (message gone) is already achieved. Failing would confuse the client.
 
+
+#3
+
+Why send greeting in constructor, not in Run()?
+RFC 5321 §4.2 mandates the server speaks first upon connection. Putting it in the constructor guarantees it happens exactly once, before any read attempt. If it were in Run(), a read timeout could theoretically fire before the greeting is sent.
+
+Why iota for states instead of strings?
+Integer comparison is O(1) and cache-friendly. String comparison allocates and is slower. In a hot loop processing every command, this matters. iota also prevents typos — the compiler catches invalid state values.
+
+Why TrimRight instead of TrimSuffix("\r\n")?
+Defensive parsing. Some broken clients send only \n without \r. TrimRight handles both cases. TrimSuffix would leave a stray \r if the client omitted it, causing silent parsing failures later.
+
+
