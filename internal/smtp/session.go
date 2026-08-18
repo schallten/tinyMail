@@ -134,18 +134,73 @@ func (s *SMTPSession) writeResponse(code int, message string) error {
 	return s.writer.Flush()
 }
 
-// --- Stub handlers (implemented in Steps 2b–2d) ---
+// handleGreeting processes EHLO/HELO commands.
+// Transitions INIT → GREETED. Must be first command after connection.
+// Returns multi-line capability list for EHLO, single-line for HELO.
+func (s *SMTPSession) handleGreeting(args string) error {
+	if s.state != StateInit {
+		return s.writeResponse(503, "bad sequence of commands")
+	}
+	if args == "" {
+		return s.writeResponse(501, "syntax: EHLO hostname")
+	}
+	s.state = StateGreeted
 
-func (s *SMTPSession) handleGreeting(hostname string) error {
-	return s.writeResponse(502, "Not implemented yet")
+	// Multi-line response uses "-" continuation; final line uses space.
+	// Clients parse capabilities from these lines (e.g., PIPELINING).
+	s.writer.WriteString("250-localhost\r\n")
+	s.writer.WriteString("250-PIPELINING\r\n")
+	s.writer.WriteString("250 OK\r\n")
+	return s.writer.Flush()
 }
 
+// handleMailFrom processes "MAIL FROM:<address>" command.
+// Transitions GREETED → MAIL. Resets previous message context.
+// Address must be wrapped in angle brackets per RFC 5321 §4.1.1.2.
 func (s *SMTPSession) handleMailFrom(args string) error {
-	return s.writeResponse(502, "Not implemented yet")
+	if s.state != StateGreeted {
+		return s.writeResponse(503, "Bad sequence of commands")
+	}
+	from := extractAddress(args)
+	if from == "" {
+		return s.writeResponse(501, "syntax: MAIL FROM:<address>")
+	}
+	// reset state for new message transaction
+	s.from = from
+	s.to = nil // clear any leftover recipients
+	s.state = StateMail
+	return s.writeResponse(250, "Sender accepted")
 }
+
+// handleRcptTo processes "RCPT TO:<address>" command.
+// Transitions MAIL → RCPT or RCPT → RCPT (multiple recipients).
+// At least one successful RCPT TO is required before DATA.
 
 func (s *SMTPSession) handleRcptTo(args string) error {
-	return s.writeResponse(502, "Not implemented yet")
+	if s.state != StateMail && s.state != StateRcpt {
+		// /this could have been written  better
+		return s.writeResponse(503, "bad sequence of commands")
+	}
+	to := extractAddress(args)
+	if to == "" {
+		return s.writeResponse(501, "syntax: RCPT TO:<address")
+	}
+	s.to = append(s.to, to)
+	s.state = StateRcpt
+	return s.writeResponse(250, "recipient accepted")
+
+}
+
+// extractAddress parses "<address>" from command arguments.
+// Handles both "FROM:<alice@example.com>" and bare "<alice@example.com>".
+// Returns empty string if angle brackets are missing or malformed.
+func extractAddress(arg string) string {
+	start := strings.Index(arg, "<")
+	end := strings.Index(arg, ">")
+	if start < 0 || end <= start {
+		return ""
+	}
+	return arg[start+1 : end]
 }
 
 func (s *SMTPSession) handleData() error {

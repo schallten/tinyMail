@@ -57,4 +57,9 @@ Integer comparison is O(1) and cache-friendly. String comparison allocates and i
 Why TrimRight instead of TrimSuffix("\r\n")?
 Defensive parsing. Some broken clients send only \n without \r. TrimRight handles both cases. TrimSuffix would leave a stray \r if the client omitted it, causing silent parsing failures later.
 
+#4
+
+Normally, sending an email is a slow, back-and-forth game of phone tag. The client says "Here is the sender," and waits for a reply. Then it says "Here is the receiver," and waits again.Pipelining completely fixes this lag. It is like ordering a full meal at a drive-thru in one breath: "I want a burger, fries, and a drink."Instead of waiting for the server to reply to every single line, the client blasts a whole batch of commands over the network all at once. The server processes them sequentially, saving a massive amount of network time.
+
+
 
