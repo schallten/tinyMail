@@ -210,24 +210,141 @@ func validateCredentials(user, pass string) bool {
 	return false
 }
 
+// handleStat processes the STAT command in TRANSACTION phase.
+// Returns count and total bytes of non-deleted messages only.
+// Format: "+OK <count> <bytes>\r\n" per RFC 1939 §5.
 func (s *POP3Session) handleStat() error {
-	return s.writeResponse(false, "Not implemented yet")
+	if s.phase != PhaseTransaction {
+		return s.writeResponse(false, "Command valid only in TRANSACTION state")
+	}
+
+	count := 0
+	var totalBytes int64
+	for _, msg := range s.mailbox {
+		if !s.toDelete[msg.ID] {
+			count++
+			totalBytes += msg.SizeBytes
+		}
+	}
+
+	return s.writeResponse(true, fmt.Sprintf("%d %d", count, totalBytes))
 }
 
+// handleList processes the LIST command in TRANSACTION phase.
+// Without argument: multi-line listing of all non-deleted messages.
+// With argument: single-line response for specific message index.
+// Indices are 1-based per RFC 1939; internally mapped to 0-based slice.
 func (s *POP3Session) handleList(args string) error {
-	return s.writeResponse(false, "Not implemented yet")
+	if s.phase != PhaseTransaction {
+		return s.writeResponse(false, "Command valid only in TRANSACTION state")
+	}
+
+	args = strings.TrimSpace(args)
+
+	if args == "" {
+		// Multi-line listing: "+OK\r\n<id> <size>\r\n...\r\n.\r\n"
+		s.writer.WriteString("+OK\r\n")
+		for i, msg := range s.mailbox {
+			if !s.toDelete[msg.ID] {
+				fmt.Fprintf(s.writer, "%d %d\r\n", i+1, msg.SizeBytes)
+			}
+		}
+		s.writer.WriteString(".\r\n")
+		return s.writer.Flush()
+	}
+
+	// Single-message lookup
+	idx, err := strconv.Atoi(args)
+	if err != nil || idx < 1 || idx > len(s.mailbox) {
+		return s.writeResponse(false, "Invalid message number")
+	}
+
+	msg := s.mailbox[idx-1] // Convert 1-based → 0-based
+	if s.toDelete[msg.ID] {
+		return s.writeResponse(false, "Message not found")
+	}
+
+	return s.writeResponse(true, fmt.Sprintf("%d %d", idx, msg.SizeBytes))
 }
 
+// handleRetr processes the RETR command in TRANSACTION phase.
+// Streams raw .eml bytes with RFC 1939 dot-stuffing applied on output.
+// Any line in the body starting with "." gets an extra "." prepended
+// so clients don't mistake it for the "\r\n.\r\n" terminator.
 func (s *POP3Session) handleRetr(args string) error {
-	return s.writeResponse(false, "Not implemented yet")
+	if s.phase != PhaseTransaction {
+		return s.writeResponse(false, "command valid only in transaction state")
+	}
+	idx, err := strconv.Atoi(strings.TrimSpace(args))
+	if err != nil || idx < 1 || idx > len(s.mailbox) {
+		return s.writeResponse(false, "invalid message number")
+	}
+
+	msg := s.mailbox[idx-1] // convert 1 based to 0 based
+	if s.toDelete[msg.ID] {
+		return s.writeResponse(false, "message not found")
+	}
+	body, err := s.store.GetMessage(s.user, msg.ID)
+	if err != nil {
+		return s.writeResponse(false, "service unavaiable")
+	}
+	// send header with byte count
+	fmt.Fprintf(s.writer, "+OK %d octets\r\n", len(body))
+
+	// stream body line by line with dot stuffing on output
+	// split on \n to preseve orgiainl line endings for re-assebly
+	lines := bytes.Split(body, []byte("\n"))
+	for i, line := range lines {
+		// re-add \n except for last element ( which maybe empty)
+		if i < len(lines)-1 {
+			line = append(line, '\n')
+		} else if len(line) == 0 {
+			continue
+		}
+
+		// dot suffing, prepend "." if line starst with "."
+		if len(line) > 0 && line[0] == '.' {
+			s.writer.WriteByte('.')
+		}
+		s.writer.Write(line)
+	}
+	// Terminator: CRLF + "." + CRLF
+	s.writer.WriteString("\r\n.\r\n")
+	return s.writer.Flush()
+
 }
 
+// handleDele processes the DELE command in TRANSACTION phase.
+// Marks message for deletion in memory ONLY; actual file removal
+// happens in UPDATE phase on QUIT. This enables rollback on disconnect.
 func (s *POP3Session) handleDele(args string) error {
-	return s.writeResponse(false, "Not implemented yet")
+	if s.phase != PhaseTransaction {
+		return s.writeResponse(false, "command valid opnly in transaction state")
+	}
+	idx, err := strconv.Atoi(strings.TrimSpace(args))
+	if err != nil || idx < 1 || idx > len(s.mailbox) {
+		return s.writeResponse(false, "invalid message number")
+	}
+
+	msg := s.mailbox[idx-1]
+	if s.toDelete[msg.ID] {
+		return s.writeResponse(false, "mssage already marked for deletion")
+	}
+
+	s.toDelete[msg.ID] = true
+	return s.writeResponse(true, fmt.Sprintf("Message %d marked for deletion", idx))
+
 }
 
+// handleReset processes the RSET command in TRANSACTION phase.
+// Clears all deletion marks without disconnecting.
+// Messages marked via DELE become visible again in STAT/LIST/RETR.
 func (s *POP3Session) handleReset() error {
-	return s.writeResponse(false, "Not implemented yet")
+	if s.phase != PhaseTransaction {
+		return s.writeResponse(false, "Command valid only in TRANSACTION state")
+	}
+	s.toDelete = make(map[string]bool)
+	return s.writeResponse(true, "Mailbox reset")
 }
 
 func (s *POP3Session) handleQuit() error {

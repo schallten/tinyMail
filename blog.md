@@ -94,4 +94,13 @@ Why store password temporarily between USER and PASS?
 POP3 requires USER then PASS as two separate commands. There’s no way to validate credentials atomically. Storing the username in user and waiting for PASS is the only option. If PASS never arrives (timeout/disconnect), the stored username is discarded when the session ends. Never log or persist this value.
 
 
+Why Don’t We Just Remove Deleted Books Immediately?
+This is the key question. Imagine this scenario:
+
+    Thunderbird asks for the catalog: sees books 1, 2, 3, 4, 5
+    Thunderbird says "delete book 2" → librarian adds sticky note
+    If we removed book 2 from the shelf immediately, books 3→2, 4→3, 5→4 would all shift
+    Thunderbird next asks for "book 3" expecting the original book 3... but gets what was originally book 4!
+    Wrong email displayed. Data corruption.
+
 
