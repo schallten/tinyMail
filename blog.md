@@ -88,3 +88,10 @@ It handles multiple messages per connection efficiently, and resets cleanly betw
 Idle or malicious clients are automatically disconnected after 30 seconds of silence.
 
 
+# POP 3
+##1
+Why store password temporarily between USER and PASS?
+POP3 requires USER then PASS as two separate commands. There’s no way to validate credentials atomically. Storing the username in user and waiting for PASS is the only option. If PASS never arrives (timeout/disconnect), the stored username is discarded when the session ends. Never log or persist this value.
+
+
+
