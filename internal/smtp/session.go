@@ -6,11 +6,18 @@ package smtp
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 	"strings"
 	"time"
+	"tinymail/internal/storage"
 )
+
+// MaxLineLength enforces RFC 5321 §4.5.3.1.6.
+// Lines exceeding 1000 bytes (including CRLF) must be rejected.
+// Prevents memory exhaustion from malicious or broken clients.
+const MaxLineLength = 1000
 
 // FSM state constants for the SMTP session.
 // States are integers for fast comparison in the command loop.
@@ -43,11 +50,12 @@ type SMTPSession struct {
 	// metdata for loggin and timeout
 	remoteAddr string
 	startTime  time.Time
+	storage    storage.Backend // depencendy for message persistence
 }
 
 // NewSMTPSession crweates a session from an accepted TCP Connection
 // sets Initial state to INIT and send the 220 greeint imediately
-func NewSMTPSession(conn net.Conn) *SMTPSession {
+func NewSMTPSession(conn net.Conn, store storage.Backend) *SMTPSession {
 	s := &SMTPSession{
 		conn:       conn,
 		reader:     bufio.NewReader(conn),
@@ -55,6 +63,7 @@ func NewSMTPSession(conn net.Conn) *SMTPSession {
 		state:      StateInit,
 		remoteAddr: conn.RemoteAddr().String(),
 		startTime:  time.Now(),
+		storage:    store,
 	}
 	// greeting is sent before any client inpuot ( RFC 5321 >4.2)
 	s.writeResponse(220, "localhost ESMTP ready")
@@ -74,6 +83,12 @@ func (s *SMTPSession) Run() {
 		if err != nil {
 			// timeoout , eof or something
 			break
+		}
+		// RFC 5321 §4.5.3.1.6: reject lines > 1000 bytes
+		// Check BEFORE trimming to catch oversized input early
+		if len(line) > MaxLineLength {
+			s.writeResponse(500, "Line too long")
+			break // Close connection on protocol violation
 		}
 		// strip trailing CRLF before parsing
 		line = strings.TrimRight(line, "\r\n")
@@ -204,13 +219,96 @@ func extractAddress(arg string) string {
 }
 
 func (s *SMTPSession) handleData() error {
-	return s.writeResponse(502, "Not implemented yet")
+	if s.state != StateRcpt || len(s.to) == 0 {
+		return s.writeResponse(503, "bad sequence of commands")
+	}
+
+	s.state = StateBuffering
+	if err := s.writeResponse(354, "Start mail input; end with <CRLF>.<CRLF>"); err != nil {
+		return err
+	}
+
+	// Extend timeout for DATA phase: large messages take time to transmit.
+	// 60s per line-read prevents slow clients from being killed mid-transfer.
+	s.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+
+	var bodyBuilder strings.Builder
+	for {
+		line, err := s.reader.ReadString('\n')
+		if err != nil {
+			// timeout or connection reset during data -> abort
+			return s.writeResponse(421, "Serviice unavailable , closing connectiioin")
+		}
+		// strip trailing crlf for processinig
+		trimmed := strings.TrimRight(line, "\r\n")
+
+		// terminator : single "." on a line signals end of data
+		if trimmed == "." {
+			break
+		}
+
+		// dot stuffing ".." at line start becomes "."
+		// this prevents body content from being mistaken for the terminator
+		if strings.HasPrefix(trimmed, ".") && len(trimmed) > 1 && trimmed[1] == '.' {
+			trimmed = trimmed[1:]
+		}
+		bodyBuilder.WriteString(trimmed)
+		bodyBuilder.WriteString("\r\n")
+	}
+	// extract subject fdrom accumulated body for storage metadata
+	subject := extractSubject(bodyBuilder.String())
+
+	// determine target user from first recipient ( single user delivery )
+	// multii recipient fan out is a future enhancement
+	user := strings.Split(s.to[0], "@")[0]
+	msg := &storage.Message{
+		From:    s.from,
+		To:      s.to,
+		Subject: subject,
+		Body:    bodyBuilder.String(),
+	}
+	// Write atomically to storage (tmp → fsync → rename)
+	if _, err := s.storage.WriteMessage(context.Background(), user, msg); err != nil {
+		// Storage failure → 451 (local error, try again later)
+		s.writeResponse(451, "Requested action aborted: local error")
+		s.state = StateGreeted // Allow client to retry or QUIT cleanly
+		return nil
+	}
+
+	// Success → reset transaction state for next message on same connection
+	s.writeResponse(250, "Message queued")
+	s.state = StateGreeted
+	s.from = ""
+	s.to = nil
+	return nil
 }
 
+// extractSubject parses the Subject header from raw message body.
+// Returns empty string if no Subject header is present.
+func extractSubject(body string) string {
+	for _, line := range strings.Split(body, "\r\n") {
+		if strings.HasPrefix(line, "Subject: ") {
+			return strings.TrimPrefix(line, "Subject: ")
+		}
+	}
+	return ""
+}
+
+// handleReset processes the RSET command.
+// Aborts current transaction and returns to GREETED state.
+// Does NOT close the connection; client can start a new message.
 func (s *SMTPSession) handleReset() error {
-	return s.writeResponse(502, "Not implemented yet")
+	s.from = ""
+	s.to = nil
+	s.state = StateGreeted
+	return s.writeResponse(250, "OK")
 }
 
+// handleQuit processes the QUIT command.
+// Sends 221 response and transitions to CLOSED state.
+// The actual conn.Close() happens via defer in Run().
 func (s *SMTPSession) handleQuit() error {
-	return s.writeResponse(502, "Not implemented yet")
+	s.writeResponse(221, "Bye")
+	s.state = StateClosed
+	return nil
 }

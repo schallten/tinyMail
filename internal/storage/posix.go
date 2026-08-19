@@ -39,8 +39,6 @@ func (s *POSIXStorage) userDirs(user string) (tmpDir, inboxDir string, err error
 	return tmpDir, inboxDir, nil
 }
 
-// skeleton to be iimplementated later
-
 // WriteMessage atomically persists a message to a user's inbox.
 // Flow: serialize → write to tmp/ → fsync → rename to inbox/.
 // The rename is atomic on POSIX; if the server crashes before rename,
@@ -72,10 +70,16 @@ func (s *POSIXStorage) WriteMessage(ctx context.Context, user string, msg *Messa
 	if _, err := f.WriteString(body); err != nil {
 		f.Close()
 		os.Remove(tmpPath) // clean up on failure
+		return "", fmt.Errorf("write body: %w", err)
+	}
+	// 6. fsync to guarantee data reaches durable storage before rename
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
 		return "", fmt.Errorf("fsync: %w", err)
 	}
 	f.Close() // must close before rename
-	// 7. Atomic rename: tmp → inbox
+	// 8. Atomic rename: tmp → inbox
 	//    On POSIX, this is a single metadata operation.
 	//    Either the old name exists or the new name exists; never both/neither.
 	finalPath := filepath.Join(inboxDir, filename)
@@ -96,7 +100,7 @@ func serializeMessage(msg *Message) string {
 	if msg.Subject != "" {
 		b.WriteString("Subject: " + msg.Subject + "\r\n")
 	}
-	b.WriteString("Date: " + time.Now().Format(time.RFC2822) + "\r\n")
+	b.WriteString("Date: " + time.Now().Format(time.RFC1123Z) + "\r\n")
 	b.WriteString("\r\n") // Blank line separates headers from body
 	b.WriteString(msg.Body)
 	return b.String()

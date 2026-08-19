@@ -61,5 +61,30 @@ Defensive parsing. Some broken clients send only \n without \r. TrimRight handle
 
 Normally, sending an email is a slow, back-and-forth game of phone tag. The client says "Here is the sender," and waits for a reply. Then it says "Here is the receiver," and waits again.Pipelining completely fixes this lag. It is like ordering a full meal at a drive-thru in one breath: "I want a burger, fries, and a drink."Instead of waiting for the server to reply to every single line, the client blasts a whole batch of commands over the network all at once. The server processes them sequentially, saving a massive amount of network time.
 
+#5
+
+Why does RSET return to GREETED instead of INIT?
+RSET aborts the current message transaction, not the entire session. The client has already identified itself via EHLO. Forcing re-EHLO after every RSET would waste round-trips and violate RFC 5321 §4.1.1.5. Only a new TCP connection requires EHLO.
+
+Why check line length BEFORE TrimRight?
+If a client sends 2000 bytes without \n, ReadString blocks until timeout. But if they send 2000 bytes with \n, we receive it immediately. Checking len(line) before trimming catches both cases: oversized valid lines AND lines that happen to include CRLF within the limit but exceed it overall. Trimming first would hide the true wire size.
+
+What happens iif a client sends a 1500-byte line ending with \r\n? (Answer: Rejected with 500, connection closed)
+
+
+## SMTP summary
+
+When an email arrives, it doesn’t go straight to the inbox. It goes to a temporary “staging” folder first.
+Only after the entire email is safely written to disk does the system move it to the real inbox in one atomic step.
+If the server crashes mid-write, the inbox stays clean. No half-written, corrupted emails ever reach the user.
+Each user has their own isolated folders. Alice can never accidentally see Bob’s mail.
+
+SMTP Engine
+
+t follows a strict conversation script (state machine). Clients must identify themselves → declare sender → declare recipients → send body → confirm. Out-of-order commands are rejected.
+It speaks the universal email language (RFC 5321) correctly: proper response codes, dot-stuffing for body safety, line length limits to prevent attacks.
+It streams large emails directly to the filing system instead of holding them in memory. A 100MB attachment won’t crash the server.
+It handles multiple messages per connection efficiently, and resets cleanly between transactions.
+Idle or malicious clients are automatically disconnected after 30 seconds of silence.
 
 
