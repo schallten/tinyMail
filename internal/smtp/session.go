@@ -258,8 +258,19 @@ func (s *SMTPSession) handleData() error {
 		bodyBuilder.WriteString(trimmed)
 		bodyBuilder.WriteString("\r\n")
 	}
-	// extract subject fdrom accumulated body for storage metadata
-	subject := extractSubject(bodyBuilder.String())
+	rawBody := bodyBuilder.String()
+
+	// Strip client-supplied headers from body.
+	// RFC 5321: clients send full RFC 2822 messages (headers + body) during DATA.
+	// serializeMessage() regenerates its own headers, so we only keep the body
+	// text (everything after the first blank line).
+	body := rawBody
+	if idx := strings.Index(body, "\r\n\r\n"); idx >= 0 {
+		body = body[idx+4:] // skip past the blank line separator
+	}
+
+	// extract subject from accumulated body for storage metadata
+	subject := extractSubject(rawBody)
 
 	// determine target user from first recipient ( single user delivery )
 	// multii recipient fan out is a future enhancement
@@ -268,7 +279,7 @@ func (s *SMTPSession) handleData() error {
 		From:    s.from,
 		To:      s.to,
 		Subject: subject,
-		Body:    bodyBuilder.String(),
+		Body:    body,
 	}
 	// Write atomically to storage (tmp → fsync → rename)
 	filename, err := s.storage.WriteMessage(context.Background(), user, msg)
