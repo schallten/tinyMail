@@ -103,4 +103,30 @@ This is the key question. Imagine this scenario:
     Thunderbird next asks for "book 3" expecting the original book 3... but gets what was originally book 4!
     Wrong email displayed. Data corruption.
 
+Why dot-stuff on output in RETR when SMTP dotted on input?
+They are inverse operations. SMTP receives dotted data from clients and removes the extra dot before storing. POP3 sends stored data to clients and must add the extra dot before transmitting. If a stored email contains a line starting with ., and you send it raw, the client sees \r\n.\r\n mid-body and thinks the message ended early. Dot-stuffing on output prevents this truncation. The client de-stuffs on receipt per RFC 1939 §3.
+
+
+
+Why does DELE return -ERR Message already marked instead of silently succeeding?
+RFC 1939 doesn’t mandate this, but it’s defensive. A client sending DELE twice for the same message likely has a bug. Returning an error helps developers diagnose issues during testing. Silently succeeding hides bugs.
+
+
+## POP 3
+
+SMTP was the "push," POP3 is the "pull."
+in POP3, when a client sends DELE 3, nothing happens on disk. The message gets a sticky note in memory. Only when the client sends QUIT do we actually delete files. If the connection drops before QUIT? All deletions vanish. The inbox stays untouched.
+
+Dot-stuffing on output. SMTP removes extra dots on input; POP3 adds them back on output. Same protocol quirk, inverse direction. Forget this and messages with lines starting with . get truncated silently.
+
+# MAIN
+
+Why inject storage instead of creating it inside each server?
+Single source of truth. If SMTP and POP3 each created their own POSIXStorage, they’d have separate base directories or conflicting file locks. Injection guarantees identical behavior and simplifies testing (swap in mock storage without changing protocol code).
+
+
+Why use sync.WaitGroup instead of channels for shutdown?
+WaitGroup is purpose-built for “wait for N goroutines to finish.” Channels would require manual counting and signaling. WaitGroup’s Add/Done/Wait trio is idiomatic, race-free, and self-documenting. We add before launching, defer Done inside the goroutine, and Wait blocks main until all complete.
+
+
 

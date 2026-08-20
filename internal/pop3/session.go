@@ -347,6 +347,29 @@ func (s *POP3Session) handleReset() error {
 	return s.writeResponse(true, "Mailbox reset")
 }
 
+// handleQuit processes the QUIT command in any phase.
+// In AUTHORIZE: simply closes connection.
+// In TRANSACTION: enters UPDATE phase, commits all deferred deletions,
+// then closes connection. Deletion failures are logged but don't fail QUIT.
 func (s *POP3Session) handleQuit() error {
-	return s.writeResponse(false, "Not implemented yet")
+	if s.phase == PhaseAuthorize {
+		s.writeResponse(true, "Bye")
+		s.phase = PhaseUpdate
+		return nil
+	}
+
+	// UPDATE phase: commit all deferred deletions to storage.
+	// Best-effort: log failures but continue. A failed delete means
+	// the message stays in inbox; client can re-delete next session.
+	for id := range s.toDelete {
+		if err := s.store.DeleteMessage(s.user, id); err != nil {
+			// Log but don't abort; partial success is acceptable
+			fmt.Fprintf(os.Stderr, "[POP3] Failed to delete %s for user %s: %v\n",
+				id, s.user, err)
+		}
+	}
+
+	s.writeResponse(true, "Bye")
+	s.phase = PhaseUpdate
+	return nil
 }
