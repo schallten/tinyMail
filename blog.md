@@ -130,3 +130,10 @@ WaitGroup is purpose-built for “wait for N goroutines to finish.” Channels w
 
 
 
+
+-   **Main Orchestrator (`cmd/server/main.go`):** Created a clean entry point that initializes shared storage and starts SMTP/POP3 listeners concurrently using goroutines. Zero protocol logic lives here.
+-   **Concurrent Connection Handling:** Each TCP connection spawns its own lightweight goroutine (~2KB stack), allowing thousands of simultaneous clients without thread exhaustion.
+-   **Graceful Shutdown:** Implemented signal handling (SIGINT/SIGTERM) that stops accepting new connections immediately while allowing active sessions to drain naturally via existing timeouts. No in-flight emails are truncated.
+-   **Structured Logging:** Added a custom, zero-dependency logger with consistent `[LEVEL] [COMPONENT] [ADDR] MSG | k=v` format across all packages for grep-friendly observability.
+-   **Socket Timeouts:** Enforced 30s command-phase and 60s DATA-phase read deadlines to prevent idle/malicious clients from holding resources indefinitely.
+

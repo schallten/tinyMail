@@ -11,6 +11,7 @@ import (
 	"net"
 	"strings"
 	"time"
+	"tinymail/internal/log"
 	"tinymail/internal/storage"
 )
 
@@ -51,6 +52,7 @@ type SMTPSession struct {
 	remoteAddr string
 	startTime  time.Time
 	storage    storage.Backend // depencendy for message persistence
+	logger     *log.Logger
 }
 
 // NewSMTPSession crweates a session from an accepted TCP Connection
@@ -64,6 +66,7 @@ func NewSMTPSession(conn net.Conn, store storage.Backend) *SMTPSession {
 		remoteAddr: conn.RemoteAddr().String(),
 		startTime:  time.Now(),
 		storage:    store,
+		logger:     log.New("SMTP"),
 	}
 	// greeting is sent before any client inpuot ( RFC 5321 >4.2)
 	s.writeResponse(220, "localhost ESMTP ready")
@@ -268,12 +271,19 @@ func (s *SMTPSession) handleData() error {
 		Body:    bodyBuilder.String(),
 	}
 	// Write atomically to storage (tmp → fsync → rename)
-	if _, err := s.storage.WriteMessage(context.Background(), user, msg); err != nil {
+	filename, err := s.storage.WriteMessage(context.Background(), user, msg)
+	if err != nil {
 		// Storage failure → 451 (local error, try again later)
 		s.writeResponse(451, "Requested action aborted: local error")
 		s.state = StateGreeted // Allow client to retry or QUIT cleanly
 		return nil
 	}
+
+	s.logger.Info(s.remoteAddr, "Message queued",
+		"from", s.from,
+		"to", strings.Join(s.to, ","),
+		"id", filename,
+	)
 
 	// Success → reset transaction state for next message on same connection
 	s.writeResponse(250, "Message queued")

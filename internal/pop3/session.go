@@ -5,13 +5,15 @@ package pop3
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
-
+	"tinymail/internal/log"
 	"tinymail/internal/storage"
 )
 
@@ -52,6 +54,7 @@ type POP3Session struct {
 	// metadata
 	remoteAddr string
 	startTime  time.Time
+	logger     *log.Logger
 }
 
 // NewPOP3Session creates a session from an accepted TCP connection
@@ -66,6 +69,7 @@ func NewPOP3Session(conn net.Conn, store storage.Backend) *POP3Session {
 		store:      store,
 		remoteAddr: conn.RemoteAddr().String(),
 		startTime:  time.Now(),
+		logger:     log.New("POP3"),
 	}
 	// greeting before client input due to RFC 1939
 	s.writeResponse(true, "POP3 server ready")
@@ -174,29 +178,43 @@ func (s *POP3Session) handlePass(password string) error {
 	}
 	password = strings.TrimSpace(password)
 
-	// Validate against plaintext credential file
+	// Strip domain for validation and storage lookup
+	lookupUser := s.user
+	if idx := strings.Index(lookupUser, "@"); idx > 0 {
+		lookupUser = lookupUser[:idx]
+	}
+
 	if !validateCredentials(s.user, password) {
-		s.user = "" // Reset; force re-USER on next attempt
+		s.user = ""
 		return s.writeResponse(false, "Invalid username or password")
 	}
 
-	// Load mailbox snapshot; frozen for entire session duration.
-	// Indices remain stable even if another client deletes messages concurrently.
-	messages, err := s.store.ListMessages(s.user)
+	// Use stripped username for storage operations
+	messages, err := s.store.ListMessages(lookupUser)
 	if err != nil {
 		s.user = ""
 		return s.writeResponse(false, "Service unavailable")
 	}
 
+	s.user = lookupUser
 	s.mailbox = messages
-	s.toDelete = make(map[string]bool) // Fresh deletion map for this session
+	s.toDelete = make(map[string]bool)
 	s.phase = PhaseTransaction
+
+	s.logger.Info(s.remoteAddr, "Login success",
+		"user", s.user,
+		"messages", fmt.Sprintf("%d", len(s.mailbox)),
+	)
 	return s.writeResponse(true, fmt.Sprintf("Logged in, %d messages", len(messages)))
 }
 
 // validateCredentials checks username:password against storage/.config/users.db.
 // Returns false if file missing, user not found, or password mismatch.
 func validateCredentials(user, pass string) bool {
+	if idx := strings.Index(user, "@"); idx > 0 {
+		user = user[:idx]
+	}
+
 	data, err := os.ReadFile(filepath.Join("storage", ".config", "users.db"))
 	if err != nil {
 		return false
@@ -368,7 +386,6 @@ func (s *POP3Session) handleQuit() error {
 				id, s.user, err)
 		}
 	}
-
 	s.writeResponse(true, "Bye")
 	s.phase = PhaseUpdate
 	return nil

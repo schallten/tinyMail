@@ -7,6 +7,7 @@
 *.dll
 *.so
 *.dylib
+mailserver
 
 # Test binary, built with `go test -c`
 *.test
@@ -28,5 +29,15 @@ go.work.sum
 .env
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Credentials
+storage/.config/users.db
+
+# User mailbox data
+storage/alice/
+storage/bob/
