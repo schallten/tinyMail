@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"tinymail/internal/pop3"
 	"tinymail/internal/smtp"
@@ -34,10 +36,25 @@ func main() {
 	store := storage.NewPOSIXStorage(*storageDir)
 	log.Printf("[MAIN] Storage initialized at %s", *storageDir)
 
+	// context for coordination graceful shutdown
+	// canelling this context signals all istenrs to stop aceepting
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// -- Start concurrect listeners
 	// each protocol runs in its own goroutine with independent accept logs
 	// sync.WaitGroup tracks active listners for clean shutdown coordination
 	var wg sync.WaitGroup
+
+	// track listeners to be able to clsoe them on signal
+	var listenersMu sync.Mutex
+	listeners := make([]net.Listener, 0, 2)
+
+	registerListener := func(l net.Listener) {
+		listenersMu.Lock()
+		listeners = append(listeners, l)
+		listenersMu.Unlock()
+	}
 
 	// SMTP Listner
 	wg.Add(1)
@@ -48,6 +65,7 @@ func main() {
 		if err != nil {
 			log.Fatal("[SMTP] Failed to listen on %s: %v", addr, err)
 		}
+		registerListener(listener) // register for shutdown
 		log.Printf("[SMPTP] listening on %s", addr)
 
 		// accept loop: each connection spawns a goroutine
@@ -56,8 +74,15 @@ func main() {
 			conn, err := listener.Accept()
 			if err != nil {
 				// listener closed during shutdown -> exit gracefully
-				log.Printf("[SMTP] accept error (likely shutdown): %v", err)
-				return
+				select {
+
+				case <-ctx.Done():
+					log.Printf("[SMTP] listener clsoed by shutdown signal")
+					return
+				default:
+					log.Printf("[SMTP] Accept error: %v", err)
+					continue
+				}
 			}
 			go smtp.NewSMTPSession(conn, store).Run()
 		}
@@ -72,12 +97,20 @@ func main() {
 		if err != nil {
 			log.Fatalf("[POP3] failed to listen on %s: %v", addr, err)
 		}
+		registerListener(listener) // register for sthudown
 		log.Printf("[POP3] listening on %s", addr)
 
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
-				log.Printf("[POP3] accept error , likely shutdown: %v", err)
+				select {
+				case <-ctx.Done():
+					log.Println("[POP3] Listener closed by shutdown signal")
+					return
+				default:
+					log.Printf("[POP3] Accept error: %v", err)
+					continue
+				}
 			}
 			go pop3.NewPOP3Session(conn, store).Run()
 		}
@@ -92,10 +125,32 @@ func main() {
 	sig := <-sigChan
 	fmt.Printf("\n[MAIN] recieved signal: %v. shuttind down..\n", sig)
 
-	// TODO: add proper listener closing + session draining.
-	// For now, this prevents abrupt process termination and logs intent.
-	log.Println("[MAIN] Waiting for active sessions to complete...")
-	wg.Wait() // Blocks until both listener goroutines return
+	cancel()
+	listenersMu.Lock()
+	for _, l := range listeners {
+		l.Close() // forces accept() to return error immediately
+	}
+	listenersMu.Unlock()
+	log.Println("[MAIN] stopped accepting new connections")
+
+	// wait for active sessions to drain
+	// active sessions have 30s timeout so they will self terminate with in that window without explicit cancecellation
+	log.Println("[MAIN] waiting for active sessions to complete (max 30s)...")
+
+	// timeout to prevent hanging if sessions ignores deadlines
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Println("[MAIN] All sessions completed ")
+	case <-time.After(35 * time.Second):
+		log.Println("[MAIN] shutdown timeout reached; forcing exit")
+	}
+
 	log.Println("[MAIN] Shutdown complete")
 
 }
